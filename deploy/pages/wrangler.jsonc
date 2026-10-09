@@ -1,0 +1,8 @@
+{
+  "name": "chapterweave-pages",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-10-09",
+  "services": [
+    { "binding": "BACKEND", "service": "chapterweave-private-backend" }
+  ]
+}
