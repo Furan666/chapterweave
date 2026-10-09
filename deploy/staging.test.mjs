@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
-import { consumeBudget, initializeBudget, MAX_QLOO_CALLS } from './backend/budget-core.mjs';
-import { CACHE_TTL_MS, createCachedQlooFetch, initializeCache } from './backend/cache-core.mjs';
+import { budgetStatus, consumeBudget, GENERAL_QLOO_CALLS, initializeBudget, MAX_QLOO_CALLS } from './backend/budget-core.mjs';
+import { cacheStatus, CACHE_TTL_MS, createCachedQlooFetch, initializeCache } from './backend/cache-core.mjs';
 import { createBackend } from './backend/app.mjs';
 import pages from './pages/proxy.mjs';
 
@@ -13,7 +13,7 @@ function sqliteStorage() {
     sql: {
       exec(query, ...bindings) {
         const statement = db.prepare(query);
-        const rows = query.trimStart().startsWith('CREATE') ?
+        const rows = /^(CREATE|ALTER|UPDATE)/.test(query.trimStart()) ?
           (statement.run(...bindings), []) : statement.all(...bindings);
         return { toArray: () => rows };
       },
@@ -33,7 +33,7 @@ function defaultQlooResponse(address) {
 }
 
 function bindings({ visitor = true, site = true, upstream = defaultQlooResponse, now = Date.now } = {}) {
-  const calls = { cache: 0, outbound: 0, visitor: 0, site: 0, name: null };
+  const calls = { cache: 0, outbound: 0, visitor: 0, site: 0, name: null, sample: 0 };
   const storage = sqliteStorage();
   initializeBudget(storage);
   initializeCache(storage);
@@ -59,9 +59,15 @@ function bindings({ visitor = true, site = true, upstream = defaultQlooResponse,
         idFromName(name) { calls.name = name; return name; },
         get() { return { async fetch(request) {
           calls.cache += 1;
+          if (new URL(request.url).pathname === '/status') {
+            assert.equal(request.method, 'GET');
+            return Response.json({ ...budgetStatus(storage), ...cacheStatus(storage, now), keyConfigured: true });
+          }
           assert.equal(new URL(request.url).pathname, '/request');
           assert.equal(request.method, 'POST');
-          return cachedFetch(await request.text());
+          const sample = request.headers.get('x-chapterweave-built-in-example') === '1';
+          if (sample) calls.sample += 1;
+          return cachedFetch(await request.text(), { sample });
         } }; },
       },
     },
@@ -72,14 +78,49 @@ const client = { headers: { 'x-chapterweave-client-ip': '192.0.2.1' } };
 const planInput = {
   groupAIds: ['film-a'], groupBIds: ['film-b'], shelfIds: ['book-1', 'book-2', 'book-3'],
 };
+const exampleInput = {
+  groupAIds: ['C7EC4CA9-1CCC-4991-B738-55F075441B3F'],
+  groupBIds: ['057DA9D9-399B-437E-8BCA-A80E499125EF'],
+  shelfIds: [
+    '2E76F365-7C08-4DDF-8C49-CC27582788E5',
+    '6CDF2DC4-2238-4C22-B0E3-7FDE341BF8C8',
+    'CF50199E-9457-4A5B-A4D4-378910DE9A77',
+    '3681886D-A7AB-484B-ACE8-DEA2027B4964',
+  ],
+};
 
-test('SQLite budget is one shared, atomic lifetime cap', () => {
+test('reserved example IDs match the public illustrative controls', async () => {
+  const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  for (const id of [...exampleInput.groupAIds, ...exampleInput.groupBIds, ...exampleInput.shelfIds,
+    'A499EC25-7FF6-46DE-9DA5-3E78E99B9E26']) assert.ok(source.includes(id), id);
+});
+
+test('SQLite budget reserves the last 60 calls for exact built-in examples', () => {
   const storage = sqliteStorage();
   initializeBudget(storage);
   initializeBudget(storage);
-  for (let i = 0; i < MAX_QLOO_CALLS; i += 1) assert.equal(consumeBudget(storage), true);
+  for (let i = 0; i < GENERAL_QLOO_CALLS; i += 1) assert.equal(consumeBudget(storage), true);
   assert.equal(consumeBudget(storage), false);
+  assert.equal(budgetStatus(storage).generalRemaining, 0);
+  assert.equal(budgetStatus(storage).remaining, MAX_QLOO_CALLS - GENERAL_QLOO_CALLS);
+  for (let i = GENERAL_QLOO_CALLS; i < MAX_QLOO_CALLS; i += 1) {
+    assert.equal(consumeBudget(storage, MAX_QLOO_CALLS, true), true);
+  }
+  assert.equal(consumeBudget(storage, MAX_QLOO_CALLS, true), false);
   assert.equal(storage.sql.exec('SELECT used FROM qloo_budget').toArray()[0].used, MAX_QLOO_CALLS);
+  storage.close();
+});
+
+test('legacy SQLite usage migrates without replenishing the general lane', () => {
+  const storage = sqliteStorage();
+  storage.sql.exec('CREATE TABLE qloo_budget (id INTEGER PRIMARY KEY, used INTEGER NOT NULL)');
+  storage.sql.exec('INSERT INTO qloo_budget (id, used) VALUES (1, 7)');
+  initializeBudget(storage);
+  assert.deepEqual({ ...storage.sql.exec('SELECT used, general_used FROM qloo_budget').toArray()[0] },
+    { used: 7, general_used: 7 });
+  initializeBudget(storage);
+  assert.equal(consumeBudget(storage), true);
+  assert.equal(budgetStatus(storage).generalRemaining, GENERAL_QLOO_CALLS - 8);
   storage.close();
 });
 
@@ -141,7 +182,7 @@ test('two group Insights calls reserve separately, then repeat plans hit the cac
 
 test('budget denial blocks the next outbound call', async () => {
   const { env, calls, storage } = bindings();
-  for (let i = 0; i < MAX_QLOO_CALLS - 1; i += 1) consumeBudget(storage);
+  for (let i = 0; i < GENERAL_QLOO_CALLS - 1; i += 1) consumeBudget(storage);
   const app = createBackend();
   const response = await app.fetch(new Request('https://backend.internal/api/plan', {
     method: 'POST', ...client, body: JSON.stringify(planInput),
@@ -149,7 +190,47 @@ test('budget denial blocks the next outbound call', async () => {
   assert.equal(response.status, 429);
   assert.equal(calls.outbound, 1);
   assert.equal(calls.cache, 2);
-  assert.equal(storage.sql.exec('SELECT used FROM qloo_budget').toArray()[0].used, MAX_QLOO_CALLS);
+  assert.equal(storage.sql.exec('SELECT used FROM qloo_budget').toArray()[0].used, GENERAL_QLOO_CALLS);
+  storage.close();
+});
+
+test('only exact built-in plan inputs use the reserve, regardless of client headers', async () => {
+  const { env, calls, storage } = bindings();
+  for (let i = 0; i < GENERAL_QLOO_CALLS; i += 1) consumeBudget(storage);
+  const app = createBackend();
+  const request = (input) => new Request('https://backend.internal/api/plan', {
+    method: 'POST',
+    headers: { ...client.headers, 'x-chapterweave-built-in-example': '1' },
+    body: JSON.stringify(input),
+  });
+  assert.equal((await app.fetch(request(planInput), env)).status, 429);
+  assert.equal(calls.sample, 0);
+  assert.equal((await app.fetch(request({ ...exampleInput, extra: true }), env)).status, 429);
+  assert.equal(calls.sample, 0);
+  const response = await app.fetch(request(exampleInput), env);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, 'bridge_found');
+  const changedGroupB = { ...exampleInput,
+    groupBIds: ['A499EC25-7FF6-46DE-9DA5-3E78E99B9E26'] };
+  assert.equal((await app.fetch(request(changedGroupB), env)).status, 200);
+  assert.equal(calls.sample, 4);
+  assert.equal(calls.outbound, 3);
+  assert.equal(budgetStatus(storage).generalRemaining, 0);
+  assert.equal(budgetStatus(storage).remaining, MAX_QLOO_CALLS - GENERAL_QLOO_CALLS - 3);
+  storage.close();
+});
+
+test('read-only status reports the local budget without an upstream call', async () => {
+  const { env, calls, storage } = bindings();
+  const app = createBackend();
+  const response = await app.fetch(new Request('https://backend.internal/api/status'), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { configured: true, localBudget: {
+    used: 0, remaining: MAX_QLOO_CALLS,
+    generalRemaining: GENERAL_QLOO_CALLS, freshEntries: 0,
+  } });
+  assert.equal(calls.outbound, 0);
+  assert.equal(calls.visitor, 0);
   storage.close();
 });
 
@@ -233,7 +314,7 @@ test('fresh cached results remain available at the cap, but new URLs cannot spen
   storage.close();
 });
 
-test('auth, rate, malformed, and transport failures never enter the cache', async () => {
+test('auth, rate, malformed, and transport failures get a bounded retry cooldown', async () => {
   const address = 'https://hackathon.api.qloo.com/search?query=Example&take=20';
   for (const [label, upstream, expected] of [
     ['auth', () => new Response(null, { status: 401 }), 401],
@@ -245,15 +326,19 @@ test('auth, rate, malformed, and transport failures never enter the cache', asyn
     initializeBudget(storage);
     initializeCache(storage);
     let outbound = 0;
+    let current = 1_000_000;
     const fetchCached = createCachedQlooFetch(storage, 'synthetic-test-key', async (...args) => {
       outbound += 1;
       return upstream(...args);
-    });
+    }, () => current);
     assert.equal((await fetchCached(address)).status, expected, label);
+    assert.equal((await fetchCached(address)).status, expected, label);
+    assert.equal(outbound, 1, label);
+    assert.equal(storage.sql.exec('SELECT COUNT(*) AS count FROM qloo_cache').toArray()[0].count, 0, label);
+    assert.equal(storage.sql.exec('SELECT used FROM qloo_budget').toArray()[0].used, 1, label);
+    current += 60 * 60 * 1000 + 1;
     assert.equal((await fetchCached(address)).status, expected, label);
     assert.equal(outbound, 2, label);
-    assert.equal(storage.sql.exec('SELECT COUNT(*) AS count FROM qloo_cache').toArray()[0].count, 0, label);
-    assert.equal(storage.sql.exec('SELECT used FROM qloo_budget').toArray()[0].used, 2, label);
     storage.close();
   }
 });
@@ -288,6 +373,7 @@ test('Pages forwards only allowlisted API paths and controlled headers', async (
     headers: {
       'cf-connecting-ip': '192.0.2.1',
       'x-chapterweave-client-ip': 'spoofed',
+      'x-chapterweave-built-in-example': '1',
       authorization: 'must-not-forward',
       'content-type': 'application/json',
     },
@@ -296,6 +382,7 @@ test('Pages forwards only allowlisted API paths and controlled headers', async (
   assert.equal(response.status, 200);
   assert.equal(forwarded.url, 'https://chapterweave.bmgg.eu/api/plan?x=1');
   assert.equal(forwarded.headers.get('x-chapterweave-client-ip'), '192.0.2.1');
+  assert.equal(forwarded.headers.get('x-chapterweave-built-in-example'), null);
   assert.equal(forwarded.headers.get('authorization'), null);
   assert.equal(await forwarded.text(), '{}');
   assert.equal((await pages.fetch(new Request('https://chapterweave.bmgg.eu/'), env)).status, 200);

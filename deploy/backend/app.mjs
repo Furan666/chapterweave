@@ -1,6 +1,34 @@
 import { planBooks, recoverBooks, searchEntities } from '../../worker.mjs';
 
 const QLOO_ORIGIN = 'https://hackathon.api.qloo.com';
+// Match only the two public, fixed-input walkthroughs in public/app.js.
+// This reserves capacity for the built-in demonstration, not for a visitor identity.
+const EXAMPLE_A = 'C7EC4CA9-1CCC-4991-B738-55F075441B3F';
+const EXAMPLE_B = new Set([
+  '057DA9D9-399B-437E-8BCA-A80E499125EF',
+  'A499EC25-7FF6-46DE-9DA5-3E78E99B9E26',
+]);
+const EXAMPLE_SHELF = [
+  '2E76F365-7C08-4DDF-8C49-CC27582788E5',
+  '6CDF2DC4-2238-4C22-B0E3-7FDE341BF8C8',
+  'CF50199E-9457-4A5B-A4D4-378910DE9A77',
+  '3681886D-A7AB-484B-ACE8-DEA2027B4964',
+];
+
+function exactList(values, expected) {
+  return Array.isArray(values) && values.length === expected.length &&
+    values.every((value, index) => value === expected[index]);
+}
+
+function builtInExamplePlan(input) {
+  return input && typeof input === 'object' && !Array.isArray(input) &&
+    Object.keys(input).length === 3 &&
+    Object.keys(input).every((key) => ['groupAIds', 'groupBIds', 'shelfIds'].includes(key)) &&
+    exactList(input.groupAIds, [EXAMPLE_A]) &&
+    Array.isArray(input.groupBIds) && input.groupBIds.length === 1 &&
+    EXAMPLE_B.has(input.groupBIds[0]) &&
+    exactList(input.shelfIds, EXAMPLE_SHELF);
+}
 
 function json(value, status = 200) {
   return Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
@@ -8,7 +36,7 @@ function json(value, status = 200) {
 
 class BudgetExceeded extends Error {}
 
-function budgetedQlooFetch(env) {
+function budgetedQlooFetch(env, builtInExample = false) {
   return async (address) => {
     const url = new URL(address);
     if (url.origin !== QLOO_ORIGIN ||
@@ -23,6 +51,7 @@ function budgetedQlooFetch(env) {
     try {
       const response = await stub.fetch(new Request('https://budget.internal/request', {
         method: 'POST', body: address,
+        headers: builtInExample ? { 'x-chapterweave-built-in-example': '1' } : {},
       }));
       if (response.headers.get('x-chapterweave-budget-exhausted') === '1') throw new BudgetExceeded();
       return response;
@@ -49,9 +78,22 @@ export function createBackend() {
       const url = new URL(request.url);
       if (url.pathname === '/api/status') {
         if (request.method !== 'GET') return json({ error: 'Use GET for status' }, 405);
-        return json({ configured: Boolean(
-          env.QLOO_API_KEY && env.PER_IP_LIMIT && env.SITE_LIMIT && env.QLOO_BUDGET,
-        ) });
+        if (!env.QLOO_API_KEY || !env.PER_IP_LIMIT || !env.SITE_LIMIT || !env.QLOO_BUDGET) {
+          return json({ configured: false });
+        }
+        try {
+          const stub = env.QLOO_BUDGET.get(env.QLOO_BUDGET.idFromName('chapterweave-qloo-key-v1'));
+          const response = await stub.fetch(new Request('https://budget.internal/status'));
+          if (!response.ok) return json({ configured: false });
+          const status = await response.json();
+          if (!status.keyConfigured) return json({ configured: false });
+          return json({ configured: true, localBudget: {
+            used: status.used, remaining: status.remaining,
+            generalRemaining: status.generalRemaining, freshEntries: status.freshEntries,
+          } });
+        } catch {
+          return json({ configured: false });
+        }
       }
       const search = url.pathname === '/api/search';
       const recover = url.pathname === '/api/recover';
@@ -77,12 +119,12 @@ export function createBackend() {
         return json({ error: 'Demo request limits are unavailable' }, 503);
       }
 
-      const callQloo = budgetedQlooFetch(env);
       if (search) {
         const type = url.searchParams.get('type');
         if (type !== null && type !== 'book') return json({ error: 'Invalid search type' }, 400);
         try {
-          return json(await searchEntities(url.searchParams.get('q'), type === 'book', env.QLOO_API_KEY, callQloo));
+          return json(await searchEntities(url.searchParams.get('q'), type === 'book',
+            env.QLOO_API_KEY, budgetedQlooFetch(env)));
         } catch (error) {
           return failure(error);
         }
@@ -102,6 +144,7 @@ export function createBackend() {
         return json({ error: 'Request must be JSON' }, 400);
       }
       try {
+        const callQloo = budgetedQlooFetch(env, !recover && builtInExamplePlan(input));
         return json(recover ?
           await recoverBooks(input, env.QLOO_API_KEY, callQloo) :
           await planBooks(input, env.QLOO_API_KEY, callQloo));
