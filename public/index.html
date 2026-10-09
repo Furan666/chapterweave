@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#142b2c">
+    <meta name="description" content="ChapterWeave helps a book-club facilitator compare two groups' cultural tastes against a shortlist of three to six books.">
+    <title>ChapterWeave — Find common ground on the shelf</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css?v=20261009">
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="./" aria-label="ChapterWeave home">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
+          <span>ChapterWeave</span>
+        </a>
+        <span class="header-tag">Book-club planner</span>
+      </div>
+    </header>
+
+    <main id="main" class="page-shell">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">A reading bridge for two groups</p>
+        <h1 id="page-title">Find common ground<br><em>on the shelf.</em></h1>
+        <p class="intro-copy">Give each group one or two films, artists, or books they love. Add three to six books your club could actually read. ChapterWeave looks for a title that ranks near the top for both groups.</p>
+        <div class="intro-actions">
+          <button class="button button-accent" id="start-button" type="button">Start with your groups <span aria-hidden="true">→</span></button>
+          <button class="text-button" id="load-live-example" type="button">Load illustrative live example</button>
+          <button class="text-button" id="preview-button" type="button">Explore a synthetic example</button>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <aside class="guide" aria-label="Planning guide">
+          <p class="guide-kicker">The method</p>
+          <ol>
+            <li><span class="guide-number">01</span><span><strong>Start with people.</strong> Pick cultural titles that represent each group.</span></li>
+            <li><span class="guide-number">02</span><span><strong>Set the shelf.</strong> Use three to six books you can source for the club.</span></li>
+            <li><span class="guide-number">03</span><span><strong>Compare positions.</strong> A bridge must land in the top half for both groups.</span></li>
+          </ol>
+          <p class="guide-footnote">Ranks are relative to each group’s own result list. For odd shelves, the top-half cutoff rounds down. Ranks do not predict attendance or confirm local availability.</p>
+        </aside>
+
+        <section class="planner" aria-label="Book club planner">
+          <nav class="step-nav" aria-label="Planner steps">
+            <button class="step-tab" type="button" data-step="1" aria-current="step"><span>01</span> Groups</button>
+            <button class="step-tab" type="button" data-step="2"><span>02</span> Shortlist</button>
+            <button class="step-tab" type="button" data-step="3" disabled><span>03</span> Recommendation</button>
+          </nav>
+
+          <div id="message" class="message" role="alert" hidden></div>
+
+          <section class="step-panel" id="step-1" aria-labelledby="groups-title">
+            <div class="panel-heading">
+              <p class="panel-kicker">Step 01 / The groups</p>
+              <h2 id="groups-title" tabindex="-1">What already moves them?</h2>
+              <p>Enter one or two titles for each group. Choose a matching catalog entity for every title before running a live plan.</p>
+            </div>
+            <div class="setup-note">
+              <span class="setup-dot" aria-hidden="true"></span>
+              <p id="connection-note">Checking this demo's Qloo configuration…</p>
+            </div>
+            <p class="field-hint" id="example-note" hidden>These groups are illustrative. The four books appear on <a href="https://www.bklynlibrary.org/borrow/book-club-sets">Brooklyn Public Library’s book-club list</a>; local copies are not verified. Catalog choices were checked on 9 October 2026. Planning queries Qloo live, so ranks may change.</p>
+            <div class="group-grid">
+              <fieldset class="group-card">
+                <legend><span class="group-letter">A</span> Group A</legend>
+                <p class="field-hint">A film, artist, or book they keep returning to.</p>
+                <div id="group-a-fields" class="entry-list"></div>
+              </fieldset>
+              <fieldset class="group-card">
+                <legend><span class="group-letter">B</span> Group B</legend>
+                <p class="field-hint">A different starting point is welcome.</p>
+                <div id="group-b-fields" class="entry-list"></div>
+              </fieldset>
+            </div>
+            <div class="panel-actions">
+              <button class="button button-dark" id="to-shelf" type="button">Continue to the shortlist <span aria-hidden="true">→</span></button>
+              <p>One anchor per group is enough.</p>
+            </div>
+          </section>
+
+          <section class="step-panel" id="step-2" aria-labelledby="shelf-title" hidden>
+            <div class="panel-heading">
+              <p class="panel-kicker">Step 02 / The shortlist</p>
+              <h2 id="shelf-title" tabindex="-1">Choose three to six books in play.</h2>
+              <p>Use a real shortlist you can obtain. Books 4–6 are optional. Each entered book needs a distinct catalog match; a typed title alone cannot be ranked.</p>
+            </div>
+            <p class="field-hint" id="example-replan-note" hidden>Group B is now Parasite (2019). Arrival and the four example books are unchanged. Press “Find a reading bridge” to compare them again; no Qloo request has been made by this switch.</p>
+            <div id="book-fields" class="book-grid"></div>
+            <div class="panel-actions">
+              <button class="button button-dark" id="plan-button" type="button">Find a reading bridge <span aria-hidden="true">→</span></button>
+              <button class="text-button" id="back-to-groups" type="button">Back to groups</button>
+            </div>
+          </section>
+
+          <section class="step-panel" id="step-3" aria-labelledby="result-title" hidden>
+            <div class="panel-heading result-heading">
+              <div>
+                <p class="panel-kicker">Step 03 / The recommendation</p>
+                <h2 id="result-title" tabindex="-1">The shelf, compared.</h2>
+              </div>
+              <span id="result-source" class="source-badge"></span>
+            </div>
+            <div id="preview-controls" class="preview-controls" hidden>
+              <p><strong>Offline preview.</strong> Illustrative titles, IDs, and ranks show the rule. No Qloo data or request is involved.</p>
+              <div class="scenario-buttons" role="group" aria-label="Synthetic result scenario">
+                <button type="button" data-scenario="bridge">Shared pick</button>
+                <button type="button" data-scenario="no-bridge">No bridge</button>
+                <button type="button" data-scenario="incomplete">Incomplete coverage</button>
+              </div>
+            </div>
+            <div id="result-body"><div id="recovery-body" hidden></div></div>
+            <div class="panel-actions result-actions">
+              <button class="text-button" id="reject-pick" type="button" hidden>This pick won't work · Try the next</button>
+              <button class="text-button" id="find-lead" type="button" hidden>Find a new book to check</button>
+              <button class="text-button" id="switch-example-group" type="button" hidden>Change Group B to Parasite (2019) · Compare again</button>
+              <button class="button button-dark" id="revise-shelf" type="button">Revise the shortlist <span aria-hidden="true">→</span></button>
+              <button class="text-button" id="revise-groups" type="button">Edit group anchors</button>
+            </div>
+          </section>
+        </section>
+      </div>
+      <noscript><p class="noscript-note">Enable JavaScript to use the ChapterWeave planner.</p></noscript>
+    </main>
+
+    <footer class="site-footer">
+      <span>ChapterWeave · Book-club planning assistant</span>
+      <span>Built for thoughtful book-club programming</span>
+    </footer>
+  </body>
+</html>
