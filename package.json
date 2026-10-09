@@ -1,0 +1,12 @@
+{
+  "name": "chapterweave",
+  "private": true,
+  "scripts": {
+    "test": "node --test planner.test.mjs worker.test.mjs preview.test.mjs deploy/staging.test.mjs",
+    "build:pages": "node deploy/pages/build.mjs",
+    "preflight:backend": "wrangler deploy --config deploy/backend/wrangler.jsonc --dry-run --outdir .wrangler/preflight"
+  },
+  "devDependencies": {
+    "wrangler": "4.148.0"
+  }
+}

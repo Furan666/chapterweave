@@ -1,0 +1,7 @@
+node_modules/
+.npm-cache/
+.wrangler/
+deploy/pages/dist/
+.dev.vars*
+.env*
+*.log
