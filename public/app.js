@@ -456,6 +456,9 @@ function renderExampleComparison(names) {
 }
 
 function renderResult() {
+  const briefStatus = document.getElementById('brief-status');
+  briefStatus.textContent = '';
+  briefStatus.hidden = true;
   const names = new Map((resultSource === 'preview' ? previewBooks() : entries.book).map((field) => [field.id, field.name]));
   const pick = result.status === 'bridge_found'
     ? result.ranked.find((row) => row.bridge && !rejectedPicks.has(row.id))
@@ -532,6 +535,48 @@ function renderResult() {
     ...(provenance ? [provenance] : []), rankHeading, wrap, note,
     ...(resultSource === 'server' ? [node('p', 'rank-note', checkedAtNote(result.sourceCheckedAt))] : []));
   renderRecovery();
+}
+
+function decisionBrief() {
+  if (!result) return '';
+  const books = resultSource === 'preview' ? previewBooks() : entries.book;
+  const names = new Map(books.map((field) => [field.id, field.name]));
+  const anchors = (group) => resultSource === 'preview' ? 'synthetic example group' :
+    entries[group].filter((field) => field.id).map((field) => field.name).join(' + ');
+  const pick = result.status === 'bridge_found'
+    ? result.ranked.find((row) => row.bridge && !rejectedPicks.has(row.id)) : null;
+  const lead = recovery?.leads.find((candidate) => !unavailableRecoveryLeads.has(candidate.id));
+  const outcome = pick
+    ? `Shared pick: ${names.get(pick.id)} (Group A #${pick.aRank}; Group B #${pick.bRank}).`
+    : result.status === 'incomplete_coverage' ? 'No pick: Qloo did not rank every shortlisted book for both groups.'
+      : result.status === 'bridge_found' ? 'No acceptable shared pick remains on this shelf.'
+        : 'No shared top-half pick on this shelf.';
+  const lines = [
+    'ChapterWeave decision brief',
+    resultSource === 'preview' ? 'Synthetic preview — no Qloo data.' : checkedAtNote(result.sourceCheckedAt),
+    `Group A anchors: ${anchors('a')}`,
+    `Group B anchors: ${anchors('b')}`,
+    outcome,
+    'Shortlist ranks:',
+    ...result.ranked.map((row) =>
+      `- ${names.get(row.id)}${rejectedPicks.has(row.id) ? ' (passed over)' : ''}: Group A ${row.aRank === null ? 'not returned' : `#${row.aRank}`}; Group B ${row.bRank === null ? 'not returned' : `#${row.bRank}`}.`),
+  ];
+  if (lead) lines.push(`Outside-shelf lead to check: ${lead.name} (Group A #${lead.aRank}; Group B #${lead.bRank}).`);
+  lines.push('Ranks are relative to separate group queries. Confirm availability before choosing a book; these ranks do not predict attendance.');
+  return lines.join('\n');
+}
+
+async function copyDecisionBrief() {
+  const brief = decisionBrief();
+  if (!brief) return;
+  const status = document.getElementById('brief-status');
+  try {
+    await navigator.clipboard.writeText(brief);
+    status.textContent = 'Brief copied. Check its availability note before sharing.';
+  } catch {
+    status.textContent = 'Could not copy the brief. You can still use the result above.';
+  }
+  status.hidden = false;
 }
 
 function renderRecovery() {
@@ -720,4 +765,5 @@ document.getElementById('reject-pick').addEventListener('click', () => {
 document.getElementById('find-lead').addEventListener('click', requestRecovery);
 document.getElementById('revise-shelf').addEventListener('click', () => showStep(2));
 document.getElementById('revise-groups').addEventListener('click', () => showStep(1));
+document.getElementById('copy-brief').addEventListener('click', copyDecisionBrief);
 showConnectionStatus();

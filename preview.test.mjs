@@ -283,3 +283,59 @@ test('live abstention puts the actual recovery outcome and next action before th
     }
   }
 });
+
+test('copied decision brief preserves source, ranks, and unverified-lead caveat without an API request', async () => {
+  const elements = new Map();
+  const document = {
+    createElement: (tag) => new Element(tag),
+    getElementById: (id) => {
+      if (!elements.has(id)) elements.set(id, new Element());
+      return elements.get(id);
+    },
+    querySelector: () => new Element(),
+    querySelectorAll: () => [new Element(), new Element(), new Element()],
+  };
+  const copied = [];
+  let requests = 0;
+  const context = vm.createContext({
+    document, URLSearchParams,
+    navigator: { clipboard: { writeText: async (value) => copied.push(value) } },
+    fetch: async () => { requests += 1; throw new Error('offline'); },
+  });
+  vm.runInContext(readFileSync(new URL('./public/app.js', import.meta.url), 'utf8'), context);
+  const startupRequests = requests;
+
+  vm.runInContext("showPreview('no-bridge')", context);
+  await elements.get('copy-brief').listeners.click();
+  assert.equal(requests, startupRequests);
+  assert.equal(elements.get('brief-status').hidden, false);
+  assert.match(elements.get('brief-status').textContent, /Brief copied/);
+  assert.match(copied[0], /Synthetic preview — no Qloo data/);
+  assert.match(copied[0], /Group A anchors: synthetic example group/);
+  assert.match(copied[0], /Outside-shelf lead to check: The Paper Voyage/);
+  assert.match(copied[0], /Confirm availability before choosing a book/);
+
+  elements.get('load-live-example').listeners.click();
+  vm.runInContext(`result = {
+    status: 'bridge_found',
+    pick: { id: entries.book[0].id, aRank: 1, bRank: 1, bridge: true },
+    ranked: entries.book.slice(0, 4).map((book, index) => ({
+      id: book.id, aRank: index + 1, bRank: index + 1, bridge: index < 2,
+    })),
+    missing: [], sourceCheckedAt: '2026-10-09T10:00:00.000Z',
+  }; resultSource = 'server'; renderResult();`, context);
+  await elements.get('copy-brief').listeners.click();
+  assert.equal(requests, startupRequests);
+  assert.match(copied[1], /Qloo data last checked/);
+  assert.match(copied[1], /Group A anchors: Arrival/);
+  assert.match(copied[1], /Group B anchors: Interstellar/);
+  assert.match(copied[1], /Shared pick: The Handmaid's Tale \(Group A #1; Group B #1\)/);
+  assert.match(copied[1], /The Vegetarian: Group A #4; Group B #4/);
+  assert.doesNotMatch(copied[1], /Outside-shelf lead to check/);
+
+  vm.runInContext('rejectedPicks.add(entries.book[0].id); rejectedPicks.add(entries.book[1].id)', context);
+  await elements.get('copy-brief').listeners.click();
+  assert.equal(requests, startupRequests);
+  assert.match(copied[2], /No acceptable shared pick remains on this shelf/);
+  assert.match(copied[2], /The Handmaid's Tale \(passed over\)/);
+});
