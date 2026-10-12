@@ -58,10 +58,12 @@ async function showConnectionStatus() {
   note.textContent = 'Live Qloo planning is not configured here. The synthetic example remains available without a Qloo request.';
 }
 
-function checkedAtNote(value) {
+function checkedAtNote(value, archived = false) {
   const date = typeof value === 'string' ? new Date(value) : null;
   return date && !Number.isNaN(date.getTime())
-    ? `Qloo data last checked ${date.toLocaleString()}. Reused results may be up to 7 days old.`
+    ? archived
+      ? `Archived Qloo replay — last checked ${date.toLocaleString()}. Live Qloo was unavailable for this result; ranks may be outdated.`
+      : `Qloo data last checked ${date.toLocaleString()}. Reused results may be up to 7 days old.`
     : 'Qloo source check time is unavailable.';
 }
 
@@ -437,7 +439,7 @@ function renderExampleComparison(names) {
       ? `Shared pick: ${names.get(plan.pick.id) || plan.pick.id}`
       : plan.status === 'no_bridge' ? 'No shared top-half book' : 'Coverage incomplete';
     card.append(node('h4', '', heading), node('p', 'comparison-outcome', outcome),
-      node('p', 'comparison-note', checkedAtNote(plan.sourceCheckedAt)));
+      node('p', 'comparison-note', checkedAtNote(plan.sourceCheckedAt, plan.archived)));
     const list = node('ul', 'comparison-list');
     for (const book of liveExample.book) {
       const row = plan.ranked.find((candidate) => candidate.id === book.id);
@@ -468,8 +470,10 @@ function renderResult() {
   document.getElementById('find-lead').hidden = !!pick || result.status === 'incomplete_coverage' || recovery !== null;
   document.getElementById('switch-example-group').hidden = !canSwitchExampleGroup();
   const source = document.getElementById('result-source');
-  source.textContent = resultSource === 'preview' ? 'Synthetic preview' : 'Qloo-backed result';
-  source.className = `source-badge${resultSource === 'preview' ? ' preview' : ''}`;
+  const archived = resultSource === 'server' && (result.archived || recovery?.archived);
+  source.textContent = resultSource === 'preview' ? 'Synthetic preview' :
+    archived ? 'Archived Qloo replay' : 'Qloo-backed result';
+  source.className = `source-badge${resultSource === 'preview' ? ' preview' : archived ? ' archived' : ''}`;
   const previewControls = document.getElementById('preview-controls');
   previewControls.hidden = resultSource !== 'preview';
   previewControls.querySelectorAll('[data-scenario]').forEach((button) => {
@@ -533,7 +537,7 @@ function renderResult() {
   const recoveryBody = document.getElementById('recovery-body');
   body.replaceChildren(outcome, recoveryBody, ...(comparison ? [comparison] : []),
     ...(provenance ? [provenance] : []), rankHeading, wrap, note,
-    ...(resultSource === 'server' ? [node('p', 'rank-note', checkedAtNote(result.sourceCheckedAt))] : []));
+    ...(resultSource === 'server' ? [node('p', 'rank-note', checkedAtNote(result.sourceCheckedAt, result.archived))] : []));
   renderRecovery();
 }
 
@@ -553,7 +557,8 @@ function decisionBrief() {
         : 'No shared top-half pick on this shelf.';
   const lines = [
     'ChapterWeave decision brief',
-    resultSource === 'preview' ? 'Synthetic preview — no Qloo data.' : checkedAtNote(result.sourceCheckedAt),
+    resultSource === 'preview' ? 'Synthetic preview — no Qloo data.' :
+      checkedAtNote(result.sourceCheckedAt, result.archived || recovery?.archived),
     `Group A anchors: ${anchors('a')}`,
     `Group B anchors: ${anchors('b')}`,
     outcome,
@@ -616,7 +621,7 @@ function renderRecovery() {
   };
   recovery.trace.forEach((step) => trace.append(node('li', '', steps[step.step])));
   card.append(trace);
-  if (!illustrative) card.append(node('p', 'recovery-note', checkedAtNote(recovery.sourceCheckedAt)));
+  if (!illustrative) card.append(node('p', 'recovery-note', checkedAtNote(recovery.sourceCheckedAt, recovery.archived)));
   if (lead && resultSource === 'server') {
     const replaceId = rejectedPicks.values().next().value || result.ranked.at(-1)?.id;
     const replaceName = entries.book.find((field) => field.id === replaceId)?.name;

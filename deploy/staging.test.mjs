@@ -89,6 +89,26 @@ const exampleInput = {
   ],
 };
 
+const changedExampleInput = { ...exampleInput,
+  groupBIds: ['A499EC25-7FF6-46DE-9DA5-3E78E99B9E26'] };
+
+function twoPlanExampleResponse(address) {
+  const url = new URL(address);
+  const shelf = url.searchParams.get('filter.results.entities');
+  const ids = shelf ? shelf.split(',') : ['lead-1', 'lead-2', 'lead-3'];
+  const order = url.searchParams.get('signal.interests.entities') ===
+    changedExampleInput.groupBIds[0] && shelf === exampleInput.shelfIds.join(',')
+    ? [...ids].reverse() : ids;
+  return Response.json({ success: true, results: { entities: order.map((id) =>
+    ({ entity_id: id, name: id, subtype: 'urn:entity:book' })) } });
+}
+
+function exampleRequest(input) {
+  return new Request('https://backend.internal/api/plan', {
+    method: 'POST', ...client, body: JSON.stringify(input),
+  });
+}
+
 test('reserved example IDs match the public illustrative controls', async () => {
   const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   for (const id of [...exampleInput.groupAIds, ...exampleInput.groupBIds, ...exampleInput.shelfIds,
@@ -220,6 +240,139 @@ test('only exact built-in plan inputs use the reserve, regardless of client head
   storage.close();
 });
 
+test('both exact built-in plans replay dated Qloo results after temporary upstream failure', async () => {
+  for (const failure of ['rate', 'server', 'transport']) {
+    let time = Date.parse('2026-10-09T10:00:00Z');
+    let mode = 'warm';
+    const upstream = (address) => mode === 'warm' ? twoPlanExampleResponse(address) :
+      failure === 'transport' ? (() => { throw new Error('offline'); })() :
+        new Response(null, { status: failure === 'rate' ? 429 : 503 });
+    const { env, storage } = bindings({ upstream, now: () => time });
+    const app = createBackend();
+    const first = await (await app.fetch(exampleRequest(exampleInput), env)).json();
+    const second = await (await app.fetch(exampleRequest(changedExampleInput), env)).json();
+    assert.equal(first.status, 'bridge_found');
+    assert.equal(second.status, 'no_bridge');
+    assert.equal(second.recovery.status, 'lead_found');
+    assert.deepEqual(second.recovery.trace.map((step) => step.step),
+      ['discover', 'compare', 'decision']);
+    assert.equal(first.archived, undefined);
+    assert.equal(second.archived, undefined);
+    const checkedAt = first.sourceCheckedAt;
+    time += CACHE_TTL_MS;
+    mode = 'fail';
+    const replayFirst = await (await app.fetch(exampleRequest(exampleInput), env)).json();
+    const replaySecond = await (await app.fetch(exampleRequest(changedExampleInput), env)).json();
+    assert.equal(replayFirst.status, first.status, failure);
+    assert.equal(replayFirst.pick.id, first.pick.id, failure);
+    assert.equal(replayFirst.archived, true, failure);
+    assert.equal(replayFirst.sourceCheckedAt, checkedAt, failure);
+    assert.equal(replaySecond.status, second.status, failure);
+    assert.deepEqual(replaySecond.ranked, second.ranked, failure);
+    assert.equal(replaySecond.archived, true, failure);
+    assert.deepEqual(replaySecond.recovery.trace, second.recovery.trace, failure);
+    assert.equal(replaySecond.recovery.archived, true, failure);
+    assert.equal(replaySecond.sourceCheckedAt, checkedAt, failure);
+    assert.equal((await app.fetch(exampleRequest(planInput), env)).status, 503, failure);
+    storage.close();
+  }
+});
+
+test('the fixed examples survive local cap, but unrelated inputs and auth failures fail closed', async () => {
+  let time = Date.parse('2026-10-09T10:00:00Z');
+  let mode = 'warm';
+  const { env, calls, storage } = bindings({
+    upstream: (address) => mode === 'warm' ? twoPlanExampleResponse(address) :
+      new Response(null, { status: mode === 'auth' ? 401 : 403 }),
+    now: () => time,
+  });
+  const app = createBackend();
+  await app.fetch(exampleRequest(exampleInput), env);
+  const before = await (await app.fetch(exampleRequest(changedExampleInput), env)).json();
+  assert.equal(before.recovery.status, 'lead_found');
+  const outboundBefore = calls.outbound;
+  while (budgetStatus(storage).remaining > 0) assert.equal(consumeBudget(storage, MAX_QLOO_CALLS, true), true);
+  time += CACHE_TTL_MS;
+  for (const input of [exampleInput, changedExampleInput]) {
+    const response = await app.fetch(exampleRequest(input), env);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).archived, true);
+  }
+  assert.equal(calls.outbound, outboundBefore);
+  assert.equal((await app.fetch(exampleRequest(planInput), env)).status, 429);
+  storage.close();
+
+  for (const status of [401, 403]) {
+    let clock = Date.parse('2026-10-09T10:00:00Z');
+    let stage = 'warm';
+    const auth = bindings({ upstream: (address) => stage === 'warm'
+      ? twoPlanExampleResponse(address) : new Response(null, { status }),
+      now: () => clock });
+    const backend = createBackend();
+    await backend.fetch(exampleRequest(exampleInput), auth.env);
+    clock += CACHE_TTL_MS;
+    stage = 'auth';
+    const denied = await backend.fetch(exampleRequest(exampleInput), auth.env);
+    assert.equal(denied.status, 503);
+    assert.equal((await denied.json()).error, 'Live catalog is unavailable; try again later');
+    auth.storage.close();
+  }
+});
+
+test('one auth rejection blocks every cached plan until Qloo authenticates again', async () => {
+  const start = Date.parse('2026-10-09T10:00:00Z');
+  let time = start;
+  let mode = 'warm';
+  const { env, calls, storage } = bindings({ upstream: (address) => mode === 'warm'
+    ? twoPlanExampleResponse(address) : new Response(null, { status: mode === 'auth' ? 401 : 429 }),
+  now: () => time });
+  const app = createBackend();
+  await app.fetch(exampleRequest(exampleInput), env);
+  time += 60 * 60 * 1000;
+  await app.fetch(exampleRequest(changedExampleInput), env);
+  time = start + CACHE_TTL_MS;
+  mode = 'auth';
+  assert.equal((await app.fetch(exampleRequest(exampleInput), env)).status, 503);
+  const outboundAtAuth = calls.outbound;
+  // The second plan is still within its ordinary seven-day cache TTL.
+  assert.equal((await app.fetch(exampleRequest(changedExampleInput), env)).status, 503);
+  assert.equal(calls.outbound, outboundAtAuth);
+  time += 60 * 60 * 1000 + 1;
+  mode = 'rate';
+  const stillBlocked = await app.fetch(exampleRequest(changedExampleInput), env);
+  assert.equal(stillBlocked.status, 503);
+  assert.equal((await stillBlocked.json()).error, 'Live catalog is unavailable; try again later');
+  time += 15 * 60 * 1000 + 1;
+  mode = 'warm';
+  const authenticated = await (await app.fetch(exampleRequest(changedExampleInput), env)).json();
+  assert.equal(authenticated.status, 'no_bridge');
+  assert.equal(authenticated.archived, undefined);
+  assert.equal(authenticated.sourceCheckedAt, new Date(time).toISOString());
+  storage.close();
+});
+
+test('a successful refresh restores live provenance, and archive mode ends after judging', async () => {
+  let time = Date.parse('2026-10-09T10:00:00Z');
+  let mode = 'warm';
+  const { env, storage } = bindings({ upstream: (address) => mode === 'rate'
+    ? new Response(null, { status: 429 }) : twoPlanExampleResponse(address),
+    now: () => time });
+  const app = createBackend();
+  await app.fetch(exampleRequest(exampleInput), env);
+  time += CACHE_TTL_MS;
+  mode = 'rate';
+  assert.equal((await (await app.fetch(exampleRequest(exampleInput), env)).json()).archived, true);
+  time += 15 * 60 * 1000 + 1;
+  mode = 'warm';
+  const fresh = await (await app.fetch(exampleRequest(exampleInput), env)).json();
+  assert.equal(fresh.archived, undefined);
+  assert.equal(fresh.sourceCheckedAt, new Date(time).toISOString());
+  time = Date.parse('2026-11-17T04:45:00Z') + 1;
+  mode = 'rate';
+  assert.equal((await app.fetch(exampleRequest(exampleInput), env)).status, 503);
+  storage.close();
+});
+
 test('read-only status reports the local budget without an upstream call', async () => {
   const { env, calls, storage } = bindings();
   const app = createBackend();
@@ -319,7 +472,7 @@ test('auth, rate, malformed, and transport failures get a bounded retry cooldown
   for (const [label, upstream, expected] of [
     ['auth', () => new Response(null, { status: 401 }), 401],
     ['rate', () => new Response(null, { status: 429 }), 429],
-    ['malformed', () => Response.json({ success: true, results: {} }), 502],
+    ['malformed', () => Response.json({ success: true, results: {} }), 424],
     ['transport', () => { throw new Error('offline'); }, 503],
   ]) {
     const storage = sqliteStorage();
@@ -341,6 +494,35 @@ test('auth, rate, malformed, and transport failures get a bounded retry cooldown
     assert.equal(outbound, 2, label);
     storage.close();
   }
+});
+
+test('stale examples reject malformed HTTP 200 data, including cooldown, but replay on upstream 502', async () => {
+  const address = 'https://hackathon.api.qloo.com/search?query=Example&take=20';
+  const storage = sqliteStorage();
+  initializeBudget(storage);
+  initializeCache(storage);
+  let time = Date.parse('2026-10-09T10:00:00Z');
+  let mode = 'warm';
+  let outbound = 0;
+  const fetchCached = createCachedQlooFetch(storage, 'synthetic-test-key', async () => {
+    outbound += 1;
+    if (mode === 'malformed') return Response.json({ success: true, results: {} });
+    if (mode === 'gateway') return new Response(null, { status: 502 });
+    return defaultQlooResponse(address);
+  }, () => time);
+  assert.equal((await fetchCached(address, { sample: true })).status, 200);
+  time += CACHE_TTL_MS;
+  mode = 'malformed';
+  assert.equal((await fetchCached(address, { sample: true })).status, 424);
+  assert.equal((await fetchCached(address, { sample: true })).status, 424);
+  assert.equal(outbound, 2);
+  time += 15 * 60 * 1000 + 1;
+  mode = 'gateway';
+  const replay = await fetchCached(address, { sample: true });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.headers.get('x-qloo-archived'), '1');
+  assert.equal(replay.headers.get('x-qloo-source-checked-at'), '2026-10-09T10:00:00.000Z');
+  storage.close();
 });
 
 test('cache stores only needed public fields and never stores or returns the key', async () => {

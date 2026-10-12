@@ -40,6 +40,10 @@ function sourceDetail(value) {
   return value ? { sourceCheckedAt: value } : {};
 }
 
+function archivedDetail(...sources) {
+  return sources.some((source) => source?.archived === true) ? { archived: true } : {};
+}
+
 async function fetchInsights(query, apiKey, fetcher, baseUrl) {
   const url = qlooEndpoint('/v2/insights', baseUrl);
   url.search = query;
@@ -56,7 +60,8 @@ async function fetchInsights(query, apiKey, fetcher, baseUrl) {
   if (body?.success !== true || !Array.isArray(body?.results?.entities)) {
     throw new Error('Qloo returned an unexpected Insights response');
   }
-  return { entities: body.results.entities, sourceCheckedAt: checkedAt(response) };
+  return { entities: body.results.entities, sourceCheckedAt: checkedAt(response),
+    ...(response.headers.get('x-qloo-archived') === '1' ? { archived: true } : {}) };
 }
 
 async function fetchBooks(seedIds, shelfIds, apiKey, fetcher, baseUrl) {
@@ -132,14 +137,16 @@ export async function planBooks(input, apiKey, fetcher = fetch, baseUrl = QLOO_A
   const b = await fetchBooks(groupBIds, shelfIds, apiKey, fetcher, baseUrl);
   const plan = rankShelf(shelfIds, a.entities, b.entities);
   const planCheckedAt = oldestCheckedAt(a.sourceCheckedAt, b.sourceCheckedAt);
-  if (plan.status !== 'no_bridge') return { ...plan, ...sourceDetail(planCheckedAt) };
+  if (plan.status !== 'no_bridge') return { ...plan, ...sourceDetail(planCheckedAt),
+    ...archivedDetail(a, b) };
   try {
     const recovery = await recoverBooks({ groupAIds, groupBIds, shelfIds }, apiKey, fetcher, baseUrl);
     return { ...plan, recovery,
-      ...sourceDetail(oldestCheckedAt(planCheckedAt, recovery.sourceCheckedAt)) };
+      ...sourceDetail(oldestCheckedAt(planCheckedAt, recovery.sourceCheckedAt)),
+      ...archivedDetail(a, b, recovery) };
   } catch {
     // Keep the honest shelf result when the optional next step is unavailable.
-    return { ...plan, ...sourceDetail(planCheckedAt),
+    return { ...plan, ...sourceDetail(planCheckedAt), ...archivedDetail(a, b),
       recoveryWarning: 'The search beyond this shelf could not complete. Try again later.' };
   }
 }
@@ -185,12 +192,12 @@ export async function recoverBooks(input, apiKey, fetcher = fetch, baseUrl = QLO
   if (!candidates.length) {
     return { status: 'no_candidates', lead: null, leads: [],
       trace: [...trace, { step: 'decision', outcome: 'no_candidates' }], availabilityVerified: false,
-      ...sourceDetail(discovery.sourceCheckedAt) };
+      ...sourceDetail(discovery.sourceCheckedAt), ...archivedDetail(discovery) };
   }
   if (candidates.length === 1) {
     return { status: 'insufficient_candidates', lead: null, leads: [],
       trace: [...trace, { step: 'decision', outcome: 'insufficient_candidates' }], availabilityVerified: false,
-      ...sourceDetail(discovery.sourceCheckedAt) };
+      ...sourceDetail(discovery.sourceCheckedAt), ...archivedDetail(discovery) };
   }
 
   const candidateIds = candidates.map((candidate) => candidate.entity_id);
@@ -211,6 +218,7 @@ export async function recoverBooks(input, apiKey, fetcher = fetch, baseUrl = QLO
     trace: [...trace, { step: 'compare', candidateCount: candidates.length }, { step: 'decision', outcome: status }],
     availabilityVerified: false,
     ...sourceDetail(oldestCheckedAt(discovery.sourceCheckedAt, a.sourceCheckedAt, b.sourceCheckedAt)),
+    ...archivedDetail(discovery, a, b),
   };
 }
 

@@ -3,6 +3,11 @@ import { consumeBudget } from './budget-core.mjs';
 export const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const FAILURE_COOLDOWN_MS = 15 * 60 * 1000;
 const AUTH_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
+const AUTH_RETRY_KEY = '__qloo_credential_auth__';
+// Distinguish a locally rejected HTTP 200 body from a real upstream 502.
+const INVALID_BODY_STATUS = 424;
+// The hackathon judge window ends on 16 November at 11:45 p.m. Eastern.
+const ARCHIVE_THROUGH_MS = Date.parse('2026-11-17T04:45:00Z');
 const QLOO_ORIGIN = 'https://hackathon.api.qloo.com';
 const BOOK_TYPE = 'urn:entity:book';
 
@@ -78,11 +83,20 @@ function compactSuccessfulBody(url, raw) {
   return JSON.stringify({ success: true, results: { entities } });
 }
 
-function success(body, fetchedAt) {
+function success(body, fetchedAt, archived = false) {
   return new Response(body, { status: 200, headers: {
     'content-type': 'application/json',
     'x-qloo-source-checked-at': new Date(fetchedAt).toISOString(),
+    ...(archived ? { 'x-qloo-archived': '1' } : {}),
   } });
+}
+
+function archiveOnTemporaryFailure(cached, sample, timestamp, status,
+  budgetExhausted = false, credentialRejected = false) {
+  if (credentialRejected || !sample || !cached || cached.fetched_at > timestamp ||
+      timestamp > ARCHIVE_THROUGH_MS ||
+      (!budgetExhausted && status !== 429 && (status < 500 || status > 599))) return null;
+  return success(cached.body, cached.fetched_at, true);
 }
 
 export function cacheStatus(storage, now = Date.now) {
@@ -100,12 +114,21 @@ export function createCachedQlooFetch(storage, apiKey, fetcher = fetch, now = Da
     const url = officialUrl(address);
     const key = url.toString();
     const timestamp = now();
+    const authRetry = storage.sql.exec('SELECT status, retry_after FROM qloo_retry WHERE url = ?',
+      AUTH_RETRY_KEY).toArray()[0];
+    if (authRetry && authRetry.retry_after > timestamp) {
+      return new Response(null, { status: authRetry.status });
+    }
     const cached = storage.sql.exec('SELECT body, fetched_at FROM qloo_cache WHERE url = ?', key).toArray()[0];
-    if (cached && cached.fetched_at <= timestamp && timestamp - cached.fetched_at < CACHE_TTL_MS) {
+    if (!authRetry && cached && cached.fetched_at <= timestamp && timestamp - cached.fetched_at < CACHE_TTL_MS) {
       return success(cached.body, cached.fetched_at);
     }
     const retry = storage.sql.exec('SELECT status, retry_after FROM qloo_retry WHERE url = ?', key).toArray()[0];
-    if (retry && retry.retry_after > timestamp) return new Response(null, { status: retry.status });
+    if (retry && retry.retry_after > timestamp) {
+      return archiveOnTemporaryFailure(cached, sample, timestamp, retry.status,
+        false, Boolean(authRetry)) ||
+        new Response(null, { status: retry.status });
+    }
     const pendingKey = `${sample ? 'sample' : 'general'}:${key}`;
     let task = pending.get(pendingKey);
     if (!task) {
@@ -117,6 +140,11 @@ export function createCachedQlooFetch(storage, apiKey, fetcher = fetch, now = Da
           storage.sql.exec(`INSERT INTO qloo_retry (url, status, retry_after) VALUES (?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET status = excluded.status, retry_after = excluded.retry_after`,
           key, status, now() + cooldown);
+          if (status === 401 || status === 403) {
+            storage.sql.exec(`INSERT INTO qloo_retry (url, status, retry_after) VALUES (?, ?, ?)
+              ON CONFLICT(url) DO UPDATE SET status = excluded.status, retry_after = excluded.retry_after`,
+            AUTH_RETRY_KEY, status, now() + cooldown);
+          }
           return { status };
         };
         let response;
@@ -129,19 +157,28 @@ export function createCachedQlooFetch(storage, apiKey, fetcher = fetch, now = Da
         let raw;
         try { raw = await response.text(); } catch { return failed(503); }
         const body = compactSuccessfulBody(url, raw);
-        if (!body) return failed(502);
+        if (!body) return failed(INVALID_BODY_STATUS);
         const fetchedAt = now();
         storage.sql.exec(`INSERT INTO qloo_cache (url, body, fetched_at) VALUES (?, ?, ?)
           ON CONFLICT(url) DO UPDATE SET body = excluded.body, fetched_at = excluded.fetched_at`,
         key, body, fetchedAt);
         storage.sql.exec('DELETE FROM qloo_retry WHERE url = ?', key);
+        storage.sql.exec('DELETE FROM qloo_retry WHERE url = ?', AUTH_RETRY_KEY);
         return { status: 200, body, fetchedAt };
       })();
       pending.set(pendingKey, task);
       void task.finally(() => pending.delete(pendingKey)).catch(() => {});
     }
     const result = await task;
+    const authAfterFetch = storage.sql.exec('SELECT status, retry_after FROM qloo_retry WHERE url = ?',
+      AUTH_RETRY_KEY).toArray()[0];
+    if (authAfterFetch && authAfterFetch.retry_after > now()) {
+      return new Response(null, { status: authAfterFetch.status });
+    }
     if (result.status === 200) return success(result.body, result.fetchedAt);
+    const archived = archiveOnTemporaryFailure(cached, sample, timestamp,
+      result.status, result.budgetExhausted, Boolean(authAfterFetch));
+    if (archived) return archived;
     return new Response(null, { status: result.status, headers:
       result.budgetExhausted ? { 'x-chapterweave-budget-exhausted': '1' } : {} });
   };

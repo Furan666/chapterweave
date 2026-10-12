@@ -333,9 +333,18 @@ test('copied decision brief preserves source, ranks, and unverified-lead caveat 
   assert.match(copied[1], /The Vegetarian: Group A #4; Group B #4/);
   assert.doesNotMatch(copied[1], /Outside-shelf lead to check/);
 
+  vm.runInContext('result.archived = true; renderResult()', context);
+  assert.equal(elements.get('result-source').textContent, 'Archived Qloo replay');
+  assert.ok(find(elements.get('result-body'), (item) =>
+    item.textContent.includes('Archived Qloo replay — last checked')));
+  await elements.get('copy-brief').listeners.click();
+  assert.equal(requests, startupRequests);
+  assert.match(copied[2], /Archived Qloo replay — last checked/);
+  assert.match(copied[2], /Live Qloo was unavailable/);
+
   vm.runInContext('rejectedPicks.add(entries.book[0].id); rejectedPicks.add(entries.book[1].id)', context);
   await elements.get('copy-brief').listeners.click();
   assert.equal(requests, startupRequests);
-  assert.match(copied[2], /No acceptable shared pick remains on this shelf/);
-  assert.match(copied[2], /The Handmaid's Tale \(passed over\)/);
+  assert.match(copied[3], /No acceptable shared pick remains on this shelf/);
+  assert.match(copied[3], /The Handmaid's Tale \(passed over\)/);
 });

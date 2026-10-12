@@ -116,7 +116,7 @@ h2 { font-size: clamp(2rem, 3.5vw, 3rem); line-height: 1.1; margin-bottom: 12px;
 
 .result-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 12px; }
 .source-badge { border: 1px solid #c7d9cf; border-radius: 100px; background: #edf5ed; color: #35604e; padding: 7px 10px; font-size: .7rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
-.source-badge.preview { border-color: #f1d5b4; background: #fff3e7; color: #945830; }
+.source-badge.preview, .source-badge.archived { border-color: #f1d5b4; background: #fff3e7; color: #945830; }
 .preview-controls { margin-bottom: 25px; padding: 17px; border: 1px solid #ead6c1; background: #fff7ed; border-radius: 9px; }
 .preview-controls p { margin-bottom: 14px; color: #674d38; font-size: .86rem; line-height: 1.5; }
 .scenario-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
