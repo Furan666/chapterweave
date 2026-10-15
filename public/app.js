@@ -496,7 +496,9 @@ function renderResult() {
     copy.textContent = `Every shared top-half book on this shelf was passed over. ChapterWeave will not force a recommendation.${recoveryLead ? ' Check the unverified lead below before changing the shortlist.' : ''}`;
   } else if (result.status === 'no_bridge') {
     label.textContent = 'No bridge on this shelf';
-    title.textContent = recoveryLead ? 'A new book to check.' : recovery ? 'No supported new lead.' : 'Try a different shortlist.';
+    title.textContent = recoveryLead ? 'A new book to check.' :
+      recovery?.status === 'lead_found' ? 'All new leads were unavailable' :
+        recovery ? 'No supported new lead.' : 'Try a different shortlist.';
     copy.textContent = `All ${result.ranked.length} books were covered, but none ranks in both groups’ top ${top}. ChapterWeave will not force a recommendation.${recoveryLead ? ' Check the unverified lead below and confirm availability before replacing a book.' : ''}`;
   } else {
     label.textContent = 'Coverage is incomplete';
@@ -642,7 +644,7 @@ function renderRecovery() {
     next.type = 'button';
     next.addEventListener('click', () => {
       unavailableRecoveryLeads.add(lead.id);
-      renderRecovery();
+      renderResult();
       body.querySelector('h3')?.focus();
     });
     card.append(next);

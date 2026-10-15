@@ -276,6 +276,14 @@ test('live abstention puts the actual recovery outcome and next action before th
       assert.ok(find(recoveryBody, (item) => item.textContent.includes('Check that you can obtain this book.')));
       assert.ok(find(recoveryBody, (item) => item.tag === 'button' &&
         item.textContent === 'I can obtain it · Replace and compare'));
+      const unavailable = find(recoveryBody, (item) => item.tag === 'button' &&
+        item.textContent.startsWith('I cannot obtain it'));
+      assert.ok(unavailable);
+      unavailable.listeners.click();
+      assert.ok(find(resultBody.children[0], (item) =>
+        item.textContent === 'All new leads were unavailable'));
+      assert.ok(find(recoveryBody, (item) => item.textContent === 'All new leads were unavailable'));
+      assert.equal(find(recoveryBody, (item) => item.tag === 'button'), null);
     } else {
       assert.ok(find(resultBody.children[0], (item) => item.textContent === 'No supported new lead.'));
       assert.ok(find(recoveryBody, (item) => item.textContent === 'No new shared lead yet'));
